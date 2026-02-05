@@ -1,7 +1,7 @@
 # Copyright 2025 NVIDIA Corp. and affiliates. All rights reserved.
-# Modified by [Fangjing Wang/ SUST University] in [2025]. 
+# Modified by [Fangjing Wang/ SUST University] in [2025].
 # Modification: [return raw data and suport multi-dataset mixture].
-# Modified by [Jinhui YE/ HKUST University] in [2025]. 
+# Modified by [Jinhui YE/ HKUST University] in [2025].
 # Modification: [suport topdowm processing, suport param from config].
 
 from pathlib import Path
@@ -32,7 +32,7 @@ def make_LeRobotSingleDataset(
     :param crop_obs_camera: Whether to crop the observation camera images.
     :return: A LeRobotSingleDataset object.
     """
-    
+
     data_config = ROBOT_TYPE_CONFIG_MAP[robot_type]
     modality_config = data_config.modality_config()
     transforms = data_config.transform()
@@ -42,9 +42,9 @@ def make_LeRobotSingleDataset(
         embodiment_tag = EmbodimentTag.NEW_EMBODIMENT
     else:
         embodiment_tag = ROBOT_TYPE_TO_EMBODIMENT_TAG[robot_type]
-    
+
     video_backend = data_cfg.get("video_backend", "decord") if data_cfg else "decord"
-    
+
     return LeRobotSingleDataset(
         dataset_path=dataset_path,
         modality_configs=modality_config,
@@ -71,8 +71,8 @@ def get_vla_dataset(
     delete_pause_frame = data_cfg.get("delete_pause_frame", False)
     mixture_spec = DATASET_NAMED_MIXTURES[data_mix]
     included_datasets, filtered_mixture_spec = set(), []
-    for d_name, d_weight, robot_type in mixture_spec:  
-        dataset_key = (d_name, robot_type)  
+    for d_name, d_weight, robot_type in mixture_spec:
+        dataset_key = (d_name, robot_type)
         if dataset_key in included_datasets:
             print(f"Skipping Duplicate Dataset: `{(d_name, d_weight, robot_type)}`")
             continue
@@ -84,6 +84,9 @@ def get_vla_dataset(
     for d_name, d_weight, robot_type in filtered_mixture_spec:
         dataset_mixture.append((make_LeRobotSingleDataset(Path(data_root_dir), d_name, robot_type, delete_pause_frame=delete_pause_frame, data_cfg=data_cfg), d_weight))
 
+    # Enable sequential mode for FlagScale-compatible loading
+    sequential_mode = data_cfg.get("sequential_mode", True)
+
     return LeRobotMixtureDataset(
         dataset_mixture,
         mode=mode,
@@ -91,6 +94,7 @@ def get_vla_dataset(
         balance_trajectory_weights=balance_trajectory_weights,
         seed=seed,
         data_cfg=data_cfg,
+        sequential_mode=sequential_mode,
         **kwargs,
     )
 

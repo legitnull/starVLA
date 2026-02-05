@@ -1,5 +1,5 @@
 # Copyright 2025 starVLA community. All rights reserved.
-# Licensed under the MIT License, Version 1.0 (the "License"); 
+# Licensed under the MIT License, Version 1.0 (the "License");
 # Implemented by [Jinhui YE / HKUST University] in [2025].
 
 
@@ -28,7 +28,7 @@ import wandb
 import yaml
 from accelerate import Accelerator, DeepSpeedPlugin
 from accelerate.logging import get_logger
-from accelerate.utils import set_seed
+from accelerate.utils import DistributedDataParallelKwargs, set_seed
 from omegaconf import OmegaConf
 from tqdm import tqdm
 from transformers import AutoProcessor, get_scheduler
@@ -42,7 +42,8 @@ from starVLA.training.trainer_utils.trainer_tools import build_param_lr_groups
 from starVLA.training.trainer_utils.config_tracker import wrap_config, AccessTrackedConfig
 
 deepspeed_plugin = DeepSpeedPlugin()
-accelerator = Accelerator(deepspeed_plugin=deepspeed_plugin)
+ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
+accelerator = Accelerator(deepspeed_plugin=deepspeed_plugin, kwargs_handlers=[ddp_kwargs])
 accelerator.print(accelerator.state)
 
 # Sane Defaults
@@ -134,8 +135,7 @@ class VLAMTrainer(TrainerUtils):
         self.total_batch_size = self._calculate_total_batch_size()
 
     def prepare_training(self):
-        rank = dist.get_rank() if dist.is_initialized() else 0
-        seed = self.config.seed + rank if hasattr(self.config, "seed") else rank + 3047
+        seed = self.config.seed if hasattr(self.config, "seed") else 42
         set_seed(seed)
 
         # load pretrained weights
@@ -226,12 +226,12 @@ class VLAMTrainer(TrainerUtils):
                 logger.info("📊 Saving accessed configuration...")
                 output_dir = Path(self.config.output_dir)
                 # self.config.save_accessed_config(
-                #     output_dir / "config.json", 
+                #     output_dir / "config.json",
                 #     use_original_values=False
                 # )
                 self.config.save_accessed_config(
-                    output_dir / "config.yaml", 
-                    use_original_values=False 
+                    output_dir / "config.yaml",
+                    use_original_values=False
                 )
                 logger.info("✅ Configuration files saved")
 
@@ -239,6 +239,11 @@ class VLAMTrainer(TrainerUtils):
 
     def _log_metrics(self, metrics):
         """record training metrics"""
+        rank = dist.get_rank() if dist.is_initialized() else 0
+        action_loss = metrics.get("action_dit_loss", "N/A")
+        vlm_loss = metrics.get("vlm_loss", "N/A")
+        print(f"[rank{rank}]:loss: action={action_loss}, vlm={vlm_loss}")
+
         if (
             self.completed_steps % self.config.trainer.logging_frequency == 0
         ):  # some parameters should be initialized for the class
@@ -310,7 +315,7 @@ class VLAMTrainer(TrainerUtils):
             if self.accelerator.sync_gradients:
                 progress_bar.update(1)
                 self.completed_steps += 1
-            
+
             if self.accelerator.is_local_main_process:
                 progress_bar.set_postfix(
                         {
@@ -400,7 +405,7 @@ class VLAMTrainer(TrainerUtils):
                 total_loss = action_loss
             self.accelerator.backward(total_loss)
 
-            
+
             pass
             # VLM task forward propagation
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
@@ -411,7 +416,7 @@ class VLAMTrainer(TrainerUtils):
 
             pass
 
-            
+
             # gradient clipping
             if self.config.trainer.gradient_clipping is not None:
                 self.accelerator.clip_grad_norm_(self.model.parameters(), self.config.trainer.gradient_clipping)

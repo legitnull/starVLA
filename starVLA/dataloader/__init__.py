@@ -37,24 +37,44 @@ def build_dataloader(cfg, dataset_py="lerobot_datasets_oxe"): # TODO now here on
 
     if dataset_py == "lerobot_datasets":
         from starVLA.dataloader.lerobot_datasets import get_vla_dataset, collate_fn
+        from torch.utils.data.distributed import DistributedSampler
+
         vla_dataset_cfg = cfg.datasets.vla_data
 
         vla_dataset = get_vla_dataset(data_cfg=vla_dataset_cfg)
-        
+
+        # Use DistributedSampler with shuffle=False for FlagScale-compatible sequential loading
+        if dist.is_initialized():
+            sampler = DistributedSampler(
+                vla_dataset,
+                num_replicas=dist.get_world_size(),
+                rank=dist.get_rank(),
+                shuffle=False,  # Sequential loading: no shuffling
+                drop_last=False,
+            )
+            shuffle = False
+        else:
+            sampler = None
+            shuffle = False
+
         vla_train_dataloader = DataLoader(
             vla_dataset,
             batch_size=cfg.datasets.vla_data.per_device_batch_size,
             collate_fn=collate_fn,
-            num_workers=4,
-            # shuffle=True
-        )        
-        if dist.get_rank() == 0: 
-            
+            sampler=sampler,
+            shuffle=shuffle,
+            num_workers=cfg.datasets.vla_data.get("num_workers", 0),
+            pin_memory=cfg.datasets.vla_data.get("pin_memory", False),
+            prefetch_factor=cfg.datasets.vla_data.get("prefetch_factor", None),
+            persistent_workers=cfg.datasets.vla_data.get("persistent_workers", False),
+        )
+
+        if dist.get_rank() == 0:
             output_dir = Path(cfg.output_dir)
             vla_dataset.save_dataset_statistics(output_dir / "dataset_statistics.json")
         return vla_train_dataloader
     elif dataset_py == "vlm_datasets":
         vlm_data_module = make_vlm_dataloader(cfg)
         vlm_train_dataloader = vlm_data_module["train_dataloader"]
-        
+
         return vlm_train_dataloader

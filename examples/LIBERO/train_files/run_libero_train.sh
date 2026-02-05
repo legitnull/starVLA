@@ -1,7 +1,10 @@
 
 
-export NCCL_SOCKET_IFNAME=bond0
-export NCCL_IB_HCA=mlx5_2,mlx5_3
+# Network interface configuration
+# For single-node training, you can comment these out to let NCCL auto-detect
+# For multi-node or if you have specific network requirements, uncomment and set:
+# export NCCL_SOCKET_IFNAME=eth0  # Change to your network interface (eth0, bond0, etc.)
+# export NCCL_IB_HCA=mlx5_2,mlx5_3  # Only needed for InfiniBand (multi-node)
 
 # used for check save when communication
 export NCCL_BLOCKING_WAIT=1
@@ -10,19 +13,21 @@ export NCCL_TIMEOUT=10000  # timeout set to 1 hour (unit: seconds)
 export NCCL_SOCKET_TIMEOUT_MS=360000
 ###########################################################################################
 # === Please modify the following paths according to your environment ===
-Framework_name=QwenOFT
+Framework_name=QwenGR00T
+# Framework_name=QwenPI
 freeze_module_list=''
 base_vlm=playground/Pretrained_models/Qwen3-VL-4B-Instruct
+# base_vlm=playground/Pretrained_models/Qwen2.5-VL-3B-Instruct
 config_yaml=./examples/LIBERO/train_files/starvla_cotrain_libero.yaml
-libero_data_root=playground/Datasets/LEROBOT_LIBERO_DATA
-data_mix=libero_all
+libero_data_root=playground/Datasets/
+data_mix=libero_goal
 run_root_dir=./results/Checkpoints
-run_id=1229_libero4in1_qwen3oft
+run_id=20260114_starvla_qwengroot_libero_goal
 # === End of environment variable configuration ===
 ###########################################################################################
 
 
-# export WANDB_MODE=disabled
+export WANDB_MODE=disabled
 
 output_dir=${run_root_dir}/${run_id}
 mkdir -p ${output_dir}
@@ -30,9 +35,14 @@ mkdir -p ${output_dir}
 cp $0 ${output_dir}/
 
 
+  # --config_file starVLA/config/deepseeds/deepspeed_zero2.yaml \
+  # --config_file starVLA/config/deepseeds/ddp.yaml \
+
+export USE_DEEPSPEED=false
+
 accelerate launch \
-  --config_file starVLA/config/deepseeds/deepspeed_zero2.yaml \
-  --num_processes 8 \
+  --config_file starVLA/config/deepseeds/ddp.yaml \
+  --num_processes 1 \
   starVLA/training/train_starvla.py \
   --config_yaml ${config_yaml} \
   --framework.name ${Framework_name} \
@@ -50,6 +60,8 @@ accelerate launch \
   --run_id ${run_id} \
   --wandb_project starVLA_Libero \
   --wandb_entity jinhuiye \
+  --framework.action_model.diffusion_model_cfg.dropout 0.0 \
+  --framework.action_model.diffusion_model_cfg.final_dropout false \
   # --is_debug True
 
 

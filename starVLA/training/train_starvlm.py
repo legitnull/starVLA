@@ -165,12 +165,12 @@ class VLAMTrainer(TrainerUtils):
                 logger.info("📊 Saving accessed configuration...")
                 output_dir = Path(self.config.output_dir)
                 # self.config.save_accessed_config(
-                #     output_dir / "config.json", 
+                #     output_dir / "config.json",
                 #     use_original_values=False
                 # )
                 self.config.save_accessed_config(
-                    output_dir / "config.yaml", 
-                    use_original_values=False 
+                    output_dir / "config.yaml",
+                    use_original_values=False
                 )
                 logger.info("✅ Configuration files saved")
         self.accelerator.wait_for_everyone()
@@ -210,6 +210,8 @@ class VLAMTrainer(TrainerUtils):
         self._log_training_config()
         self._create_data_iterators()
         progress_bar = tqdm(range(self.config.trainer.max_train_steps), disable=not self.accelerator.is_local_main_process)
+
+
 
         while self.completed_steps < self.config.trainer.max_train_steps:
             batch_vlm = self._get_next_batch()

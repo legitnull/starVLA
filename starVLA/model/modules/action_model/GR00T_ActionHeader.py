@@ -1,5 +1,5 @@
 # Copyright 2025 NVIDIA Corp. and affiliates. All rights reserved.
-# Modified by [Junqiu YU/ Fudan University] in [2025]. 
+# Modified by [Junqiu YU/ Fudan University] in [2025].
 # Modification: [rm and add some connect adapter to match with starVLA, e.g., "rm "].
 # Action repeat is inspired by CogACT
 
@@ -224,7 +224,7 @@ class FlowmatchingActionHead(nn.Module):
         self.full_config = full_config
         action_model_type = config.action_model_type
         action_model_cfg = DiTConfig[action_model_type]
-        
+
         self.input_embedding_dim = action_model_cfg["input_embedding_dim"]
         diffusion_model_cfg = config.diffusion_model_cfg
         diffusion_model_cfg = {**action_model_cfg, **diffusion_model_cfg}
@@ -274,9 +274,26 @@ class FlowmatchingActionHead(nn.Module):
         """
         device = vl_embs.device
 
+        # Validate action dimension
+        if actions.shape[-1] != self.action_dim:
+            raise ValueError(
+                f"Action dimension mismatch: model expects {self.action_dim} dimensions "
+                f"(from config), but received actions with {actions.shape[-1]} dimensions. "
+                f"Please update config.framework.action_model.action_dim to match your data."
+            )
+
+        # DEBUG: deterministic timesteps for alignment verification
+        torch.manual_seed(42)
+        torch.cuda.manual_seed(42)
+
         # Embed noised action trajectory.
         noise = torch.randn(actions.shape, device=actions.device, dtype=actions.dtype)
         t = self.sample_time(actions.shape[0], device=actions.device, dtype=actions.dtype)
+
+        # DEBUG: print noise and t for alignment verification
+        print(f"[DEBUG] noise shape: {noise.shape}, noise[0,0,:3]: {noise[0,0,:3].tolist()}")
+        print(f"[DEBUG] t shape: {t.shape}, t[:4]: {t[:4].tolist()}")
+
         t = t[:, None, None]  # shape (B,1,1) for broadcast
 
         noisy_trajectory = (1 - t) * noise + t * actions
@@ -330,7 +347,7 @@ class FlowmatchingActionHead(nn.Module):
 
         num_steps = self.num_inference_timesteps
         dt = 1.0 / num_steps
-        
+
         state_features = self.state_encoder(state) if state is not None else None
 
         # Run denoising steps.

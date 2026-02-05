@@ -1,5 +1,5 @@
 # Copyright 2025 starVLA community. All rights reserved.
-# Licensed under the MIT License, Version 1.0 (the "License"); 
+# Licensed under the MIT License, Version 1.0 (the "License");
 # Implemented by [Jinhui YE / HKUST University] in [2025].
 
 
@@ -29,7 +29,7 @@ import wandb
 import yaml
 from accelerate import Accelerator, DeepSpeedPlugin
 from accelerate.logging import get_logger
-from accelerate.utils import set_seed
+from accelerate.utils import DistributedDataParallelKwargs, set_seed
 from omegaconf import OmegaConf
 from tqdm import tqdm
 from transformers import AutoProcessor, get_scheduler
@@ -41,8 +41,14 @@ from starVLA.training.trainer_utils.trainer_tools import TrainerUtils
 from starVLA.training.trainer_utils.trainer_tools import build_param_lr_groups
 from starVLA.training.trainer_utils.config_tracker import wrap_config, AccessTrackedConfig
 
-deepspeed_plugin = DeepSpeedPlugin()
-accelerator = Accelerator(deepspeed_plugin=deepspeed_plugin)
+use_deepspeed = os.environ.get("USE_DEEPSPEED", "true").lower() == "true"
+ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
+deepspeed_plugin = DeepSpeedPlugin() if use_deepspeed else None
+accelerator = (
+    Accelerator(deepspeed_plugin=deepspeed_plugin, kwargs_handlers=[ddp_kwargs])
+    if use_deepspeed
+    else Accelerator(kwargs_handlers=[ddp_kwargs])
+)
 accelerator.print(accelerator.state)
 
 # Sane Defaults
@@ -144,11 +150,11 @@ class VLATrainer(TrainerUtils):
         # training status tracking
         self.completed_steps = 0
         self.total_batch_size = self._calculate_total_batch_size()
-    
+
     def prepare_training(self):
-        rank = dist.get_rank() if dist.is_initialized() else 0
-        seed = self.config.seed + rank if hasattr(self.config, "seed") else rank + 3047
-        set_seed(seed)
+        # seed = self.config.seed if hasattr(self.config, "seed") else 42
+        # print(f"Seed: {seed}")
+        # set_seed(seed)
 
         # load pretrained weights
         self._init_checkpointing() # TODO merge with load pretrained weights
@@ -182,15 +188,15 @@ class VLATrainer(TrainerUtils):
         """根据已完成的步数调整学习率调度器状态"""
         if self.completed_steps > 0:
             logger.info(f"Adjusting LR scheduler for resume from step {self.completed_steps}")
-            
+
             # 方法1: 直接模拟已完成的步数（适用于大多数调度器）
             for _ in range(self.completed_steps):
                 self.lr_scheduler.step()
-            
+
             # 或者方法2: 对于某些调度器，可以直接设置最后步数
             # if hasattr(self.lr_scheduler, '_step_count'):
             #     self.lr_scheduler._step_count = self.completed_steps
-            
+
             logger.info(f"LR scheduler adjusted to step {self.completed_steps}, current LR: {self.lr_scheduler.get_last_lr()}")
 
     def _calculate_total_batch_size(self):
@@ -225,7 +231,7 @@ class VLATrainer(TrainerUtils):
         if is_resume:
             # 恢复训练状态
             resume_from_checkpoint, self.completed_steps = self._get_latest_checkpoint(self.checkpoint_dir)
-            
+
             if resume_from_checkpoint:
                 self.resume_from_checkpoint = resume_from_checkpoint
                 self.model = self.load_pretrained_backbones(self.model, self.resume_from_checkpoint, reload_modules=None)
@@ -249,7 +255,7 @@ class VLATrainer(TrainerUtils):
         else:
             logger.info("No pretrained checkpoint provided. Starting training from scratch.")
             self.completed_steps = 0
-    
+
 
     def _load_checkpoint(self, checkpoint_path):
         """load checkpoint"""
@@ -278,12 +284,12 @@ class VLATrainer(TrainerUtils):
                 logger.info("📊 Saving accessed configuration...")
                 output_dir = Path(self.config.output_dir)
                 # self.config.save_accessed_config(
-                #     output_dir / "config.json", 
+                #     output_dir / "config.json",
                 #     use_original_values=False
                 # )
                 self.config.save_accessed_config(
-                    output_dir / "config.yaml", 
-                    use_original_values=False 
+                    output_dir / "config.yaml",
+                    use_original_values=False
                 )
                 logger.info("✅ Configuration files saved")
 
@@ -291,9 +297,13 @@ class VLATrainer(TrainerUtils):
 
     def _log_metrics(self, metrics):
         """record training metrics"""
+        rank = dist.get_rank() if dist.is_initialized() else 0
+        loss_value = metrics.get("action_dit_loss", "N/A")
+        print(f"[rank{rank}]:loss: {loss_value}, grad_norm: {metrics.get('grad_norm', 'N/A')}")
+
         if self.completed_steps % self.config.trainer.logging_frequency == 0:
             if dist.get_rank() == 0:
-                # add learning rate 
+                # add learning rate
                 metrics["learning_rate"] = self.lr_scheduler.get_last_lr()[0] # see lr group in yaml.trainer.learning_rate
 
                 # add epoch info
@@ -336,11 +346,40 @@ class VLATrainer(TrainerUtils):
             range(self.config.trainer.max_train_steps), disable=not self.accelerator.is_local_main_process
         )
 
+        # import itertools
+        # import os
+
+        # def dump_starvla_order(dataloader, n=50):
+        #     sampler = dataloader.sampler
+        #     idxs = list(itertools.islice(iter(sampler), n))
+        #     pairs = [dataloader.dataset.all_steps[i] for i in idxs]
+        #     print("StarVLA sample ids:", pairs)
+
+        # def dump_starvla_order(dataloader, n=50):
+        #     sampler = dataloader.sampler
+        #     dataset = dataloader.dataset
+
+        #     idxs = list(itertools.islice(iter(sampler), n))
+        #     for i in idxs:
+        #         dataset_obj, trajectory_id, frame_index = dataset.sample_step(i)
+        #         # map trajectory_id -> trajectory_index
+        #         # trajectory_index = dataset_obj.trajectory_ids.index(trajectory_id)
+        #         print(i, trajectory_id, frame_index)
+        # dump_starvla_order(self.vla_train_dataloader, 16*10)
+
+        # assert False
+
         # main training loop
         while self.completed_steps < self.config.trainer.max_train_steps:
             # get data batch
             t_start_data = time.perf_counter()
             batch_vla = self._get_next_batch()
+
+            tra_ids = [example["trajectory_id"] for example in batch_vla]
+            frame_ids = [example["frame_index"] for example in batch_vla]
+            print(f"rank{dist.get_rank()}: trajectory_ids: {tra_ids}, frame_ids: {frame_ids}")
+            # continue
+
             t_end_data = time.perf_counter()
 
             # execute training step
@@ -352,7 +391,7 @@ class VLATrainer(TrainerUtils):
             if self.accelerator.sync_gradients:
                 progress_bar.update(1)
                 self.completed_steps += 1
-            
+
             if self.accelerator.is_local_main_process:
                 progress_bar.set_postfix(
                         {
@@ -396,8 +435,9 @@ class VLATrainer(TrainerUtils):
         score = 0.0
         num_samples = len(examples)
         actions = [example["action"] for example in examples]  # label
-        # Predict actions using the model
-        output_dict = self.model.predict_action(
+        # Predict actions using the underlying model when wrapped (e.g., DDP)
+        model = self.accelerator.unwrap_model(self.model)
+        output_dict = model.predict_action(
             examples=examples, use_ddim=True, num_ddim_steps=20
         )
 
@@ -435,13 +475,119 @@ class VLATrainer(TrainerUtils):
 
                 action_loss = output_dict["action_loss"]
                 total_loss = action_loss
+                print(f"Action Loss: {action_loss.item()}")
 
             # VLA backward propagation
             self.accelerator.backward(total_loss)
 
+            # DEBUG: Compute gradient norm separately for VLM and action model
+            vlm_norm_sq = 0.0
+            action_norm_sq = 0.0
+            total_norm_sq = 0.0
+            vlm_param_count = 0
+            action_param_count = 0
+
+            for name, param in self.model.named_parameters():
+                if param.grad is not None:
+                    grad_sq = param.grad.data.norm(2).item() ** 2
+                    total_norm_sq += grad_sq
+                    if 'action_model' in name:
+                        action_norm_sq += grad_sq
+                        action_param_count += 1
+                    elif 'qwen_vl_interface' in name:
+                        vlm_norm_sq += grad_sq
+                        vlm_param_count += 1
+
+            print(f"[DEBUG] VLM grad_norm: {vlm_norm_sq ** 0.5:.4f} ({vlm_param_count} params with grads)")
+            print(f"[DEBUG] Action model grad_norm: {action_norm_sq ** 0.5:.4f} ({action_param_count} params with grads)")
+            print(f"[DEBUG] Total grad_norm (raw): {total_norm_sq ** 0.5:.4f}")
+
+            # DEBUG: Print ALL action model parameter gradients
+            print("[DEBUG] === Action Model Parameter Gradients ===")
+            for name, param in self.model.named_parameters():
+                if 'action_model' in name and param.grad is not None:
+                    print(f"[DEBUG] {name}: {param.grad.norm().item():.6f}")
+            # DEBUG: Compute gradient norm separately for VLM and action model
+            vlm_norm_sq = 0.0
+            action_norm_sq = 0.0
+            total_norm_sq = 0.0
+            vlm_param_count = 0
+            action_param_count = 0
+
+            for name, param in self.model.named_parameters():
+                if param.grad is not None:
+                    grad_sq = param.grad.data.norm(2).item() ** 2
+                    total_norm_sq += grad_sq
+                    if 'action_model' in name:
+                        action_norm_sq += grad_sq
+                        action_param_count += 1
+                    elif 'qwen_vl_interface' in name:
+                        vlm_norm_sq += grad_sq
+                        vlm_param_count += 1
+
+            print(f"[DEBUG] VLM grad_norm: {vlm_norm_sq ** 0.5:.4f} ({vlm_param_count} params with grads)")
+            print(f"[DEBUG] Action model grad_norm: {action_norm_sq ** 0.5:.4f} ({action_param_count} params with grads)")
+            print(f"[DEBUG] Total grad_norm (raw): {total_norm_sq ** 0.5:.4f}")
+
+            # DEBUG: Print a specific parameter's gradient for comparison
+            for name, param in self.model.named_parameters():
+                if 'action_model.action_decoder.layer1.weight' in name and param.grad is not None:
+                    print(f"[DEBUG] {name} grad norm: {param.grad.norm().item()}")
+                    print(f"[DEBUG] {name} grad mean: {param.grad.mean().item()}")
+                    break
+
+            import torch.distributed as dist
+            print(f"\n{'='*80}")
+            print(f"DDP STATE CHECK")
+            print(f"{'='*80}")
+            print(f"Dist initialized: {dist.is_initialized()}")
+            if dist.is_initialized():
+                print(f"World size: {dist.get_world_size()}")
+                print(f"Rank: {dist.get_rank()}")
+            print(f"Accelerator num_processes: {self.accelerator.num_processes}")
+            print(f"Model type: {type(self.model)}")
+            print(f"Model has .module: {hasattr(self.model, 'module')}")
+
+            # DEBUG: Compute gradient norm manually (without modifying gradients)
+            total_norm_sq = 0.0
+            for param in self.model.parameters():
+                if param.grad is not None:
+                    total_norm_sq += param.grad.data.norm(2).item() ** 2
+            manual_grad_norm = total_norm_sq ** 0.5
+            print(f"[DEBUG] Manual grad_norm (raw computation): {manual_grad_norm}")
+
+            # DEBUG: Print a specific parameter's gradient for comparison
+            for name, param in self.model.named_parameters():
+                if 'action_model.action_decoder.layer1.weight' in name and param.grad is not None:
+                    print(f"[DEBUG] {name} grad norm: {param.grad.norm().item()}")
+                    print(f"[DEBUG] {name} grad mean: {param.grad.mean().item()}")
+                    break
+
+            # Check if model is DDP wrapped
+            if hasattr(self.model, 'module'):
+                inner = self.model.module
+                print(f"Inner model type: {type(inner)}")
+                if hasattr(self.model, 'reducer'):
+                    print(f"DDP reducer exists: True")
+                if hasattr(self.model, '_rebuild_buckets'):
+                    print(f"DDP rebuild_buckets exists: True")
+
+            # Sample a parameter's gradient
+            for name, param in self.model.named_parameters():
+                if 'action_decoder' in name and param.grad is not None:
+                    print(f"\nSample param: {name}")
+                    print(f"  Grad dtype: {param.grad.dtype}")
+                    print(f"  Grad device: {param.grad.device}")
+                    print(f"  Grad norm: {param.grad.norm().item():.10f}")
+                    break
+            print(f"{'='*80}\n")
+
+            grad_norm = None
             # gradient clipping
             if self.config.trainer.gradient_clipping is not None:
-                self.accelerator.clip_grad_norm_(self.model.parameters(), self.config.trainer.gradient_clipping)
+                print(f"rank{dist.get_rank()}: gradient clipping: {self.config.trainer.gradient_clipping}")
+                grad_norm = self.accelerator.clip_grad_norm_(self.model.parameters(), self.config.trainer.gradient_clipping)
+                print(f"rank{dist.get_rank()}: grad_norm: {grad_norm}")
 
             # optimizer step
             self.optimizer.step()
@@ -449,6 +595,7 @@ class VLATrainer(TrainerUtils):
 
         return {
             "action_dit_loss": action_loss.item(),
+            "grad_norm": grad_norm,
         }
 
     def _finalize_training(self):
@@ -475,6 +622,17 @@ def main(cfg) -> None:
     #  Wrap config to enable access tracking
     cfg = wrap_config(cfg)
     logger.info("✅ Configuration wrapped for access tracking")
+
+    seed = cfg.seed if hasattr(cfg, "seed") else 42
+    logger.info(f"Seed: {seed}")
+    set_seed(seed)
+
+    torch.backends.cudnn.enabled = True
+    torch.backends.cudnn.benchmark = True
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cuda.matmul.allow_tf32 = True
+
+    print(f"cfg: {cfg}")
 
     # create output directory and save config
     output_dir = setup_directories(cfg=cfg)

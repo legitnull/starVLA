@@ -1,5 +1,5 @@
 # Copyright 2025 starVLA community. All rights reserved.
-# Licensed under the MIT License, Version 1.0 (the "License"); 
+# Licensed under the MIT License, Version 1.0 (the "License");
 # Implemented by [Jinhui YE / HKUST University] in [2025].
 
 import torch
@@ -57,10 +57,19 @@ class _QWen3_VL_Interface(nn.Module):
         model = Qwen3VLForConditionalGeneration.from_pretrained(
             model_id,
             attn_implementation="flash_attention_2",
+            # attn_implementation="eager",
             dtype=torch.bfloat16,
         )
         processor = AutoProcessor.from_pretrained(model_id)
         processor.tokenizer.padding_side = "left"
+
+        # DEBUG: Log and verify VLM dropout settings
+        # print(f"[DEBUG] VLM config BEFORE changes:")
+        # print(f"  attention_dropout: {getattr(model.config, 'attention_dropout', 'N/A')}")
+        # print(f"  hidden_dropout_prob: {getattr(model.config, 'hidden_dropout_prob', 'N/A')}")
+        # if hasattr(model.config, 'text_config'):
+        #     print(f"  text_config.attention_dropout: {getattr(model.config.text_config, 'attention_dropout', 'N/A')}")
+        #     print(f"  text_config.hidden_dropout_prob: {getattr(model.config.text_config, 'hidden_dropout_prob', 'N/A')}")
 
         self.model = model
         self.processor = processor
@@ -145,7 +154,7 @@ class _QWen3_VL_Interface(nn.Module):
         )
 
         # if solutions, mask out the solution tokens in labels
-        if solutions is not None: #  here only for fast_tokenizer now. 
+        if solutions is not None: #  here only for fast_tokenizer now.
             action_token_min = _ACTION_TOKEN_MIN # how can we know this range? --> we has other way for this, but is slower see qwenhelix branch
             action_token_max = _ACTION_TOKEN_MAX # here only for fast_tokenizer, see starVLA/model/modules/vlm/tools/add_qwen_special_tokens/README.md
             labels = batch_inputs['input_ids'].clone()
@@ -163,7 +172,7 @@ class _QWen3_VL_Interface(nn.Module):
                     # If no action token is found, mask the entire sequence.
                     seq[:] = IGNORE_INDEX
                     RuntimeWarning (f"action token are on in yout tokenizer, plz see starVLA/model/modules/vlm/tools/add_qwen_special_tokens/README.md.")
-            
+
             labels[labels == self.processor.tokenizer.pad_token_id] = -100 ## mask out pad tokens as well
             batch_inputs['labels'] = labels
 
@@ -185,7 +194,7 @@ if __name__ == "__main__":
     debugpy.wait_for_client()
 
     cfg = OmegaConf.load(args.config_yaml)
-    
+
     cfg.framework.qwenvl.base_vlm = "./playground/Pretrained_models/Qwen3-VL-4B-Instruct"
     qwen_vl = _QWen3_VL_Interface(cfg)
     pass
