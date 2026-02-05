@@ -762,6 +762,7 @@ class LeRobotSingleDataset(Dataset):
             dict: The data for the step.
         """
         trajectory_id, base_index = self.all_steps[index]
+        # print(f"[starVLA] idx: {index}, trajectory_id: {trajectory_id}, base_index: {base_index}")
         data = self.get_step_data(trajectory_id, base_index)
 
         # Process all video keys dynamically
@@ -786,6 +787,7 @@ class LeRobotSingleDataset(Dataset):
             action.append(data[action_key])
         action = np.concatenate(action, axis=1)
 
+        # print(f"[starVLA] action[0,:5]: {action[0,:5].tolist()}")
         return dict(
             action=action,
             image=images,

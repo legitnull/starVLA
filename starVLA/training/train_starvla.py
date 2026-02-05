@@ -61,6 +61,98 @@ from accelerate.logging import get_logger
 logger = get_logger(__name__)
 
 
+def register_debug_hooks(model_obj):
+    """
+    给模型挂载带有 Rank 信息的 Forward 和 Backward Hook
+    model_obj: 可以是 model (list) 也可以是 model[0] (module)
+    """
+    # 1. 获取 Rank 的辅助函数
+    def get_rank():
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            return torch.distributed.get_rank()
+        return 0
+    # 2. 通用打印函数
+    def calc_and_print(tensor, name, tag):
+        """
+        tensor: 要打印的张量
+        name: 模块名称 + 参数位置
+        tag: FWD 或 BWD
+        """
+        if tensor is None:
+            return
+        # 仅处理 Tensor，忽略 None 或其他类型
+        if isinstance(tensor, torch.Tensor):
+            # 获取当前 Rank
+            rank = get_rank()
+            # 计算 sum (转为 float32 防止溢出，item() 会触发同步确保数值准确)
+            # 注意：打印日志会显著降低训练速度，仅用于 Debug
+            val = torch.sum(tensor.detach().to(torch.float32)).item()
+            # 打印格式：[Rank 0][FWD] layers.0.self_attention sum: 1234.56
+            print(f"[Rank {rank}][{tag}] {name} sum: {val}", flush=True)
+    # 3. 前向 Hook 定义
+    def forward_wrapper(name):
+        def forward_hook(module, input, output):
+            # 打印 Input (元组或张量)
+            if isinstance(input, (list, tuple)):
+                for i, item in enumerate(input):
+                    calc_and_print(item, f"{name}.input[{i}]", "FWD")
+            else:
+                calc_and_print(input, f"{name}.input", "FWD")
+            # 打印 Output
+            if isinstance(output, (list, tuple)):
+                for i, item in enumerate(output):
+                    calc_and_print(item, f"{name}.output[{i}]", "FWD")
+            else:
+                calc_and_print(output, f"{name}.output", "FWD")
+        return forward_hook
+    # 4. 反向 Hook 定义 (使用 register_full_backward_hook)
+    def backward_wrapper(name):
+        def backward_hook(module, grad_input, grad_output):
+            # grad_output: 从上一层流回来的梯度 (反向传播的“输入”)
+            if isinstance(grad_output, (list, tuple)):
+                for i, g in enumerate(grad_output):
+                    calc_and_print(g, f"{name}.grad_output[{i}]", "BWD")
+            else:
+                calc_and_print(grad_output, f"{name}.grad_output", "BWD")
+            # grad_input: 当前层计算出的梯度 (准备传给下一层)
+            if isinstance(grad_input, (list, tuple)):
+                for i, g in enumerate(grad_input):
+                    calc_and_print(g, f"{name}.grad_input[{i}]", "BWD")
+            else:
+                calc_and_print(grad_input, f"{name}.grad_input", "BWD")
+        return backward_hook
+    # 5. 开始注册
+    # 兼容 list 结构
+    actual_module = model_obj[0] if isinstance(model_obj, list) else model_obj
+    print(f"Rank {get_rank()}: 开始挂载 Debug Hooks (仅叶子层)...", flush=True)
+    # 遍历所有子模块
+    for name, module in actual_module.named_modules():
+        # 【核心修改】跳过容器层，只Hook叶子层（没有子模块的层）
+        # 这样可以避免 Hook 顶层模块导致的 View 属性变化，同时也能覆盖所有计算
+        if len(list(module.children())) > 0:
+            continue
+        # 额外的黑名单（可选）：跳过一些不重要的层，比如 Dropout
+        if isinstance(module, torch.nn.Dropout):
+            continue
+        # 注册 FWD Hook
+        handle_fwd = module.register_forward_hook(forward_wrapper(name))
+        # 注册 BWD Hook
+        handle_bwd = module.register_full_backward_hook(backward_wrapper(name))
+def remove_debug_hooks_force(model_obj):
+    """
+    暴力清除模型中所有的 hook，不需要 handle。
+    """
+    actual_module = model_obj[0] if isinstance(model_obj, list) else model_obj
+    print("Force removing all hooks...", flush=True)
+    for module in actual_module.modules():
+        # 清除前向 hook
+        if hasattr(module, "_forward_hooks"):
+            module._forward_hooks.clear()
+        # 清除反向 hook
+        if hasattr(module, "_backward_hooks"):
+            module._backward_hooks.clear()
+    print("Hooks force removed.", flush=True)
+
 def load_fast_tokenizer():
     fast_tokenizer = AutoProcessor.from_pretrained("physical-intelligence/fast", trust_remote_code=True)
     return fast_tokenizer
@@ -480,107 +572,107 @@ class VLATrainer(TrainerUtils):
             # VLA backward propagation
             self.accelerator.backward(total_loss)
 
-            # DEBUG: Compute gradient norm separately for VLM and action model
-            vlm_norm_sq = 0.0
-            action_norm_sq = 0.0
-            total_norm_sq = 0.0
-            vlm_param_count = 0
-            action_param_count = 0
+            # # DEBUG: Compute gradient norm separately for VLM and action model
+            # vlm_norm_sq = 0.0
+            # action_norm_sq = 0.0
+            # total_norm_sq = 0.0
+            # vlm_param_count = 0
+            # action_param_count = 0
 
-            for name, param in self.model.named_parameters():
-                if param.grad is not None:
-                    grad_sq = param.grad.data.norm(2).item() ** 2
-                    total_norm_sq += grad_sq
-                    if 'action_model' in name:
-                        action_norm_sq += grad_sq
-                        action_param_count += 1
-                    elif 'qwen_vl_interface' in name:
-                        vlm_norm_sq += grad_sq
-                        vlm_param_count += 1
+            # for name, param in self.model.named_parameters():
+            #     if param.grad is not None:
+            #         grad_sq = param.grad.data.norm(2).item() ** 2
+            #         total_norm_sq += grad_sq
+            #         if 'action_model' in name:
+            #             action_norm_sq += grad_sq
+            #             action_param_count += 1
+            #         elif 'qwen_vl_interface' in name:
+            #             vlm_norm_sq += grad_sq
+            #             vlm_param_count += 1
 
-            print(f"[DEBUG] VLM grad_norm: {vlm_norm_sq ** 0.5:.4f} ({vlm_param_count} params with grads)")
-            print(f"[DEBUG] Action model grad_norm: {action_norm_sq ** 0.5:.4f} ({action_param_count} params with grads)")
-            print(f"[DEBUG] Total grad_norm (raw): {total_norm_sq ** 0.5:.4f}")
+            # print(f"[DEBUG] VLM grad_norm: {vlm_norm_sq ** 0.5:.4f} ({vlm_param_count} params with grads)")
+            # print(f"[DEBUG] Action model grad_norm: {action_norm_sq ** 0.5:.4f} ({action_param_count} params with grads)")
+            # print(f"[DEBUG] Total grad_norm (raw): {total_norm_sq ** 0.5:.4f}")
 
-            # DEBUG: Print ALL action model parameter gradients
-            print("[DEBUG] === Action Model Parameter Gradients ===")
-            for name, param in self.model.named_parameters():
-                if 'action_model' in name and param.grad is not None:
-                    print(f"[DEBUG] {name}: {param.grad.norm().item():.6f}")
-            # DEBUG: Compute gradient norm separately for VLM and action model
-            vlm_norm_sq = 0.0
-            action_norm_sq = 0.0
-            total_norm_sq = 0.0
-            vlm_param_count = 0
-            action_param_count = 0
+            # # DEBUG: Print ALL action model parameter gradients
+            # print("[DEBUG] === Action Model Parameter Gradients ===")
+            # for name, param in self.model.named_parameters():
+            #     if 'action_model' in name and param.grad is not None:
+            #         print(f"[DEBUG] {name}: {param.grad.norm().item():.6f}")
+            # # DEBUG: Compute gradient norm separately for VLM and action model
+            # vlm_norm_sq = 0.0
+            # action_norm_sq = 0.0
+            # total_norm_sq = 0.0
+            # vlm_param_count = 0
+            # action_param_count = 0
 
-            for name, param in self.model.named_parameters():
-                if param.grad is not None:
-                    grad_sq = param.grad.data.norm(2).item() ** 2
-                    total_norm_sq += grad_sq
-                    if 'action_model' in name:
-                        action_norm_sq += grad_sq
-                        action_param_count += 1
-                    elif 'qwen_vl_interface' in name:
-                        vlm_norm_sq += grad_sq
-                        vlm_param_count += 1
+            # for name, param in self.model.named_parameters():
+            #     if param.grad is not None:
+            #         grad_sq = param.grad.data.norm(2).item() ** 2
+            #         total_norm_sq += grad_sq
+            #         if 'action_model' in name:
+            #             action_norm_sq += grad_sq
+            #             action_param_count += 1
+            #         elif 'qwen_vl_interface' in name:
+            #             vlm_norm_sq += grad_sq
+            #             vlm_param_count += 1
 
-            print(f"[DEBUG] VLM grad_norm: {vlm_norm_sq ** 0.5:.4f} ({vlm_param_count} params with grads)")
-            print(f"[DEBUG] Action model grad_norm: {action_norm_sq ** 0.5:.4f} ({action_param_count} params with grads)")
-            print(f"[DEBUG] Total grad_norm (raw): {total_norm_sq ** 0.5:.4f}")
+            # print(f"[DEBUG] VLM grad_norm: {vlm_norm_sq ** 0.5:.4f} ({vlm_param_count} params with grads)")
+            # print(f"[DEBUG] Action model grad_norm: {action_norm_sq ** 0.5:.4f} ({action_param_count} params with grads)")
+            # print(f"[DEBUG] Total grad_norm (raw): {total_norm_sq ** 0.5:.4f}")
 
-            # DEBUG: Print a specific parameter's gradient for comparison
-            for name, param in self.model.named_parameters():
-                if 'action_model.action_decoder.layer1.weight' in name and param.grad is not None:
-                    print(f"[DEBUG] {name} grad norm: {param.grad.norm().item()}")
-                    print(f"[DEBUG] {name} grad mean: {param.grad.mean().item()}")
-                    break
+            # # DEBUG: Print a specific parameter's gradient for comparison
+            # for name, param in self.model.named_parameters():
+            #     if 'action_model.action_decoder.layer1.weight' in name and param.grad is not None:
+            #         print(f"[DEBUG] {name} grad norm: {param.grad.norm().item()}")
+            #         print(f"[DEBUG] {name} grad mean: {param.grad.mean().item()}")
+            #         break
 
-            import torch.distributed as dist
-            print(f"\n{'='*80}")
-            print(f"DDP STATE CHECK")
-            print(f"{'='*80}")
-            print(f"Dist initialized: {dist.is_initialized()}")
-            if dist.is_initialized():
-                print(f"World size: {dist.get_world_size()}")
-                print(f"Rank: {dist.get_rank()}")
-            print(f"Accelerator num_processes: {self.accelerator.num_processes}")
-            print(f"Model type: {type(self.model)}")
-            print(f"Model has .module: {hasattr(self.model, 'module')}")
+            # import torch.distributed as dist
+            # print(f"\n{'='*80}")
+            # print(f"DDP STATE CHECK")
+            # print(f"{'='*80}")
+            # print(f"Dist initialized: {dist.is_initialized()}")
+            # if dist.is_initialized():
+            #     print(f"World size: {dist.get_world_size()}")
+            #     print(f"Rank: {dist.get_rank()}")
+            # print(f"Accelerator num_processes: {self.accelerator.num_processes}")
+            # print(f"Model type: {type(self.model)}")
+            # print(f"Model has .module: {hasattr(self.model, 'module')}")
 
-            # DEBUG: Compute gradient norm manually (without modifying gradients)
-            total_norm_sq = 0.0
-            for param in self.model.parameters():
-                if param.grad is not None:
-                    total_norm_sq += param.grad.data.norm(2).item() ** 2
-            manual_grad_norm = total_norm_sq ** 0.5
-            print(f"[DEBUG] Manual grad_norm (raw computation): {manual_grad_norm}")
+            # # DEBUG: Compute gradient norm manually (without modifying gradients)
+            # total_norm_sq = 0.0
+            # for param in self.model.parameters():
+            #     if param.grad is not None:
+            #         total_norm_sq += param.grad.data.norm(2).item() ** 2
+            # manual_grad_norm = total_norm_sq ** 0.5
+            # print(f"[DEBUG] Manual grad_norm (raw computation): {manual_grad_norm}")
 
-            # DEBUG: Print a specific parameter's gradient for comparison
-            for name, param in self.model.named_parameters():
-                if 'action_model.action_decoder.layer1.weight' in name and param.grad is not None:
-                    print(f"[DEBUG] {name} grad norm: {param.grad.norm().item()}")
-                    print(f"[DEBUG] {name} grad mean: {param.grad.mean().item()}")
-                    break
+            # # DEBUG: Print a specific parameter's gradient for comparison
+            # for name, param in self.model.named_parameters():
+            #     if 'action_model.action_decoder.layer1.weight' in name and param.grad is not None:
+            #         print(f"[DEBUG] {name} grad norm: {param.grad.norm().item()}")
+            #         print(f"[DEBUG] {name} grad mean: {param.grad.mean().item()}")
+            #         break
 
-            # Check if model is DDP wrapped
-            if hasattr(self.model, 'module'):
-                inner = self.model.module
-                print(f"Inner model type: {type(inner)}")
-                if hasattr(self.model, 'reducer'):
-                    print(f"DDP reducer exists: True")
-                if hasattr(self.model, '_rebuild_buckets'):
-                    print(f"DDP rebuild_buckets exists: True")
+            # # Check if model is DDP wrapped
+            # if hasattr(self.model, 'module'):
+            #     inner = self.model.module
+            #     print(f"Inner model type: {type(inner)}")
+            #     if hasattr(self.model, 'reducer'):
+            #         print(f"DDP reducer exists: True")
+            #     if hasattr(self.model, '_rebuild_buckets'):
+            #         print(f"DDP rebuild_buckets exists: True")
 
-            # Sample a parameter's gradient
-            for name, param in self.model.named_parameters():
-                if 'action_decoder' in name and param.grad is not None:
-                    print(f"\nSample param: {name}")
-                    print(f"  Grad dtype: {param.grad.dtype}")
-                    print(f"  Grad device: {param.grad.device}")
-                    print(f"  Grad norm: {param.grad.norm().item():.10f}")
-                    break
-            print(f"{'='*80}\n")
+            # # Sample a parameter's gradient
+            # for name, param in self.model.named_parameters():
+            #     if 'action_decoder' in name and param.grad is not None:
+            #         print(f"\nSample param: {name}")
+            #         print(f"  Grad dtype: {param.grad.dtype}")
+            #         print(f"  Grad device: {param.grad.device}")
+            #         print(f"  Grad norm: {param.grad.norm().item():.10f}")
+            #         break
+            # print(f"{'='*80}\n")
 
             grad_norm = None
             # gradient clipping
@@ -626,6 +718,7 @@ def main(cfg) -> None:
     seed = cfg.seed if hasattr(cfg, "seed") else 42
     logger.info(f"Seed: {seed}")
     set_seed(seed)
+    print(f"[DEBUG RNG main] After set_seed: torch state[:10] = {torch.get_rng_state()[:10].tolist()}")
 
     torch.backends.cudnn.enabled = True
     torch.backends.cudnn.benchmark = True
@@ -636,8 +729,12 @@ def main(cfg) -> None:
 
     # create output directory and save config
     output_dir = setup_directories(cfg=cfg)
+    print(f"[DEBUG RNG main] After setup_directories: torch state[:10] = {torch.get_rng_state()[:10].tolist()}")
+
     # build model
     vla = build_framework(cfg)
+    # register_debug_hooks(vla)
+
     # prepare data
     vla_train_dataloader = prepare_data(cfg=cfg, accelerator=accelerator, output_dir=output_dir)
 

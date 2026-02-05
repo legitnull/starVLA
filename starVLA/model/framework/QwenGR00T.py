@@ -69,15 +69,37 @@ class Qwen_GR00T(baseframework):
         """
         super().__init__()
         self.config = config
+
+        # DEBUG: Track random state before VLM creation
+        print(f"[DEBUG RNG] Before VLM: torch state[:10] = {torch.get_rng_state()[:10].tolist()}")
+
         self.qwen_vl_interface = get_vlm_model(config=self.config)
+
+        # DEBUG: Track random state after VLM creation
+        print(f"[DEBUG RNG] After VLM: torch state[:10] = {torch.get_rng_state()[:10].tolist()}")
+
         # align dims --> we should put them to config or no?
         self.config.framework.action_model.diffusion_model_cfg.cross_attention_dim = self.qwen_vl_interface.model.config.hidden_size
 
         self.action_model: FlowmatchingActionHead = get_action_model(config=self.config)  # 修复后续引用
 
+        # DEBUG: Track random state after action model creation
+        print(f"[DEBUG RNG] After action_model: torch state[:10] = {torch.get_rng_state()[:10].tolist()}")
+
+        # DEBUG: Print action encoder weights
+        if hasattr(self.action_model, 'action_encoder'):
+            ae = self.action_model.action_encoder
+            print(f"[DEBUG INIT] action_encoder.layer1.weight sum: {ae.layer1.weight.sum().item():.6f}")
+
         # DEBUG: verify cross_attention_dim and VLM hidden_size match
-        print(f"[CONFIG VERIFY] DiT cross_attention_dim: {self.action_model.model.config.cross_attention_dim}")
-        print(f"[CONFIG VERIFY] VLM hidden_size: {self.qwen_vl_interface.model.config.hidden_size}")
+        # print(f"[CONFIG VERIFY] DiT cross_attention_dim: {self.action_model.model.config.cross_attention_dim}")
+        # print(f"[CONFIG VERIFY] VLM hidden_size: {self.qwen_vl_interface.model.config.hidden_size}")
+
+        # DEBUG: Print action encoder weights to verify initialization matches FlagScale
+        # if hasattr(self.action_model, 'action_encoder'):
+        #     ae = self.action_model.action_encoder
+        #     print(f"[DEBUG INIT] action_encoder.layer1.weight[:3,:5]: {ae.layer1.weight[:3,:5].tolist()}")
+        #     print(f"[DEBUG INIT] action_encoder.layer1.weight sum: {ae.layer1.weight.sum().item():.6f}")
 
         self.future_action_window_size = config.framework.action_model.future_action_window_size
         self.past_action_window_size = config.framework.action_model.past_action_window_size
@@ -125,8 +147,8 @@ class Qwen_GR00T(baseframework):
             )
             # last_hidden_state: [B, seq_len, H]
             last_hidden = qwenvl_outputs.hidden_states[-1]   # [B, L, H]
-            print(f"[DEBUG] last_hidden shape: {last_hidden.shape}, dtype: {last_hidden.dtype}")
-            print(f"[DEBUG] last_hidden norm: {last_hidden.norm().item():.4f}, mean: {last_hidden.mean().item():.6f}, std: {last_hidden.std().item():.6f}")
+            # print(f"[DEBUG] last_hidden shape: {last_hidden.shape}, dtype: {last_hidden.dtype}")
+            # print(f"[DEBUG] last_hidden norm: {last_hidden.norm().item():.4f}, mean: {last_hidden.mean().item():.6f}, std: {last_hidden.std().item():.6f}")
 
         # torch.save(last_hidden, "last_hidden_debug.pt")
         # assert False
@@ -138,10 +160,14 @@ class Qwen_GR00T(baseframework):
             )  # [B, T_full, action_dim]
             actions_target = actions[:, -(self.future_action_window_size+1):, :]  # (B, chunk_len, action_dim)
 
+            # print(f"[DEBUG] actions_target shape before repeat: {actions_target.shape}")
+            # print(f"[DEBUG] actions_target sum: {actions_target.sum().item():.4f}")
+            # print(f"[DEBUG] actions_target[0,0,:5]: {actions_target[0,0,:5].tolist()}")
+
             repeated_diffusion_steps = (
                 self.config.trainer.get("repeated_diffusion_steps", 4) if self.config and self.config.trainer else 4
             )
-            print(f"repeated_diffusion_steps: {repeated_diffusion_steps}")
+            # print(f"repeated_diffusion_steps: {repeated_diffusion_steps}")
             actions_target_repeated = actions_target.repeat(repeated_diffusion_steps, 1, 1)
             last_hidden_repeated = last_hidden.repeat(repeated_diffusion_steps, 1, 1)
 
@@ -162,7 +188,7 @@ class Qwen_GR00T(baseframework):
 
             # torch.save(action_loss, "action_loss_debug.pt")
 
-        print(f"action_loss: {action_loss}")
+        # print(f"action_loss: {action_loss}")
 
         # assert False
 

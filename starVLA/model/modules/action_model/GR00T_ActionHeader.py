@@ -286,6 +286,11 @@ class FlowmatchingActionHead(nn.Module):
         torch.manual_seed(42)
         torch.cuda.manual_seed(42)
 
+        # DEBUG: Print input shapes and stats
+        # print(f"[ACTION HEAD] vl_embs shape: {vl_embs.shape}, norm: {vl_embs.norm().item():.4f}")
+        # print(f"[ACTION HEAD] actions shape: {actions.shape}, norm: {actions.norm().item():.4f}")
+        # print(f"[ACTION HEAD] actions[0,0,:5]: {actions[0,0,:5].tolist()}")
+
         # Embed noised action trajectory.
         noise = torch.randn(actions.shape, device=actions.device, dtype=actions.dtype)
         t = self.sample_time(actions.shape[0], device=actions.device, dtype=actions.dtype)
