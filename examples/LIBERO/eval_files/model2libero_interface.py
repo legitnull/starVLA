@@ -32,7 +32,7 @@ class ModelClient:
         host="0.0.0.0",
         port=10095,
     ) -> None:
-        
+
         # build client to connect server policy
         self.client = WebsocketClientPolicy(host, port)
         self.policy_setup = policy_setup
@@ -59,9 +59,9 @@ class ModelClient:
             self.action_ensembler = None
         self.num_image_history = 0
 
-        self.action_norm_stats = self.get_action_stats(self.unnorm_key, policy_ckpt_path=policy_ckpt_path)
-        self.action_chunk_size = self.get_action_chunk_size(policy_ckpt_path=policy_ckpt_path)
-        
+        # self.action_norm_stats = self.get_action_stats(self.unnorm_key, policy_ckpt_path=policy_ckpt_path)
+        self.action_chunk_size = 8 # self.get_action_chunk_size(policy_ckpt_path=policy_ckpt_path)
+
 
     def _add_image_to_history(self, image: np.ndarray) -> None:
         self.image_history.append(image)
@@ -81,7 +81,7 @@ class ModelClient:
 
 
     def step(
-        self, 
+        self,
         example: dict,
         step: int = 0,
         **kwargs
@@ -93,13 +93,13 @@ class ModelClient:
         :return: (raw action, processed action)
         """
 
-        task_description = example.get("lang", None) 
+        task_description = example.get("lang", None)
         images = example["image"]  # list of images for history
 
         if example is not None:
             if task_description != self.task_description:
                 self.reset(task_description)
-                
+
         images = [self._resize_image(image) for image in images]
         example["image"] = images
         vla_input = {
@@ -108,21 +108,22 @@ class ModelClient:
             "use_ddim": self.use_ddim,
             "num_ddim_steps": self.num_ddim_steps,
         }
-        
+
 
         action_chunk_size = self.action_chunk_size
         if step % action_chunk_size == 0:
             response = self.client.predict_action(vla_input)
             try:
-                normalized_actions = response["data"]["normalized_actions"] # B, chunk, D        
+                normalized_actions = response["data"]["normalized_actions"] # B, chunk, D
             except KeyError:
                 print(f"Response data: {response}")
                 raise KeyError(f"Key 'normalized_actions' not found in response data: {response['data'].keys()}")
-            
-            normalized_actions = normalized_actions[0]    
-            self.raw_actions = self.unnormalize_actions(normalized_actions=normalized_actions, action_norm_stats=self.action_norm_stats)
-        
-        raw_actions = self.raw_actions[step % action_chunk_size][None]    
+
+            normalized_actions = normalized_actions[0]
+            # self.raw_actions = self.unnormalize_actions(normalized_actions=normalized_actions, action_norm_stats=self.action_norm_stats)
+            self.raw_actions = normalized_actions
+
+        raw_actions = self.raw_actions[step % action_chunk_size][None]
 
         raw_action = {
             "world_vector": np.array(raw_actions[0, :3]),
@@ -137,13 +138,13 @@ class ModelClient:
         mask = action_norm_stats.get("mask", np.ones_like(action_norm_stats["min"], dtype=bool))
         action_high, action_low = np.array(action_norm_stats["max"]), np.array(action_norm_stats["min"])
         normalized_actions = np.clip(normalized_actions, -1, 1)
-        normalized_actions[:, 6] = np.where(normalized_actions[:, 6] < 0.5, 0, 1) 
+        normalized_actions[:, 6] = np.where(normalized_actions[:, 6] < 0.5, 0, 1)
         actions = np.where(
             mask,
             0.5 * (normalized_actions + 1) * (action_high - action_low) + action_low,
             normalized_actions,
         )
-        
+
         return actions
 
     @staticmethod
@@ -199,7 +200,7 @@ class ModelClient:
         axs["image"].set_xlabel("Time in one episode (subsampled)")
         plt.legend()
         plt.savefig(save_path)
-    
+
     @staticmethod
     def _check_unnorm_key(norm_stats, unnorm_key):
         """
