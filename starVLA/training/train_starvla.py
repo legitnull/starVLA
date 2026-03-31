@@ -732,7 +732,7 @@ def main(cfg) -> None:
     print(f"[DEBUG RNG main] After setup_directories: torch state[:10] = {torch.get_rng_state()[:10].tolist()}")
 
     # build model
-    vla = build_framework(cfg)
+    # vla = build_framework(cfg)
     # register_debug_hooks(vla)
 
     # prepare data

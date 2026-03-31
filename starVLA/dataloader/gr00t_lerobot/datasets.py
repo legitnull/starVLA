@@ -762,7 +762,7 @@ class LeRobotSingleDataset(Dataset):
             dict: The data for the step.
         """
         trajectory_id, base_index = self.all_steps[index]
-        # print(f"[starVLA] idx: {index}, trajectory_id: {trajectory_id}, base_index: {base_index}")
+        print(f"[starVLA] idx: {index}, trajectory_id: {trajectory_id}, base_index: {base_index}")
         data = self.get_step_data(trajectory_id, base_index)
 
         # Process all video keys dynamically
@@ -773,12 +773,12 @@ class LeRobotSingleDataset(Dataset):
             # Apply image cropping if enabled and the video key is base_view
             # Note: crop_obs_camera functionality has been removed
 
-            # torch.save(image, f"getitem_image_{video_key}.pt")
+            torch.save(image, f"getitem_image_{video_key}.pt")
             image = Image.fromarray(image).resize((224, 224))
-            # torch.save(image, f"getitem_image_resized_{video_key}.pt")
+            torch.save(image, f"getitem_image_resized_{video_key}.pt")
             images.append(image)
 
-        # assert False
+        assert False
 
         # Get language and action data
         language = data[self.modality_keys["language"][0]][0]

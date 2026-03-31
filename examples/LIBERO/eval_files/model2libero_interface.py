@@ -23,12 +23,12 @@ class ModelClient:
         unnorm_key: Optional[str] = None,
         policy_setup: str = "franka",
         horizon: int = 0,
-        action_ensemble = True,
-        action_ensemble_horizon: Optional[int] = 3, # different cross sim
+        action_ensemble=True,
+        action_ensemble_horizon: Optional[int] = 3,  # different cross sim
         image_size: list[int] = [224, 224],
         use_ddim: bool = True,
         num_ddim_steps: int = 10,
-        adaptive_ensemble_alpha = 0.1,
+        adaptive_ensemble_alpha=0.1,
         host="0.0.0.0",
         port=10095,
     ) -> None:
@@ -42,7 +42,7 @@ class ModelClient:
         self.use_ddim = use_ddim
         self.num_ddim_steps = num_ddim_steps
         self.image_size = image_size
-        self.horizon = horizon #0
+        self.horizon = horizon  # 0
         self.action_ensemble = action_ensemble
         self.adaptive_ensemble_alpha = adaptive_ensemble_alpha
         self.action_ensemble_horizon = action_ensemble_horizon
@@ -60,8 +60,7 @@ class ModelClient:
         self.num_image_history = 0
 
         # self.action_norm_stats = self.get_action_stats(self.unnorm_key, policy_ckpt_path=policy_ckpt_path)
-        self.action_chunk_size = 8 # self.get_action_chunk_size(policy_ckpt_path=policy_ckpt_path)
-
+        self.action_chunk_size = 8  # self.get_action_chunk_size(policy_ckpt_path=policy_ckpt_path)
 
     def _add_image_to_history(self, image: np.ndarray) -> None:
         self.image_history.append(image)
@@ -79,13 +78,7 @@ class ModelClient:
         self.sticky_gripper_action = 0.0
         self.previous_gripper_action = None
 
-
-    def step(
-        self,
-        example: dict,
-        step: int = 0,
-        **kwargs
-    ) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
+    def step(self, example: dict, step: int = 0, **kwargs) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
         """
         Perform one step of inference
         :param image: Input image in the format (H, W, 3), type uint8
@@ -94,32 +87,48 @@ class ModelClient:
         """
 
         task_description = example.get("lang", None)
-        images = example["image"]  # list of images for history
+        # images = example["image"]  # list of images for history
 
         if example is not None:
             if task_description != self.task_description:
                 self.reset(task_description)
 
-        images = [self._resize_image(image) for image in images]
-        example["image"] = images
-        vla_input = {
-            "examples": [example],
-            "do_sample": False,
-            "use_ddim": self.use_ddim,
-            "num_ddim_steps": self.num_ddim_steps,
-        }
+        # images = [self._resize_image(image) for image in images]
+        # example["image"] = images
+        #
+        # Let the serve preprocessor handle resizing — don't resize here
 
 
+        # example["observation.images.image"] = self._resize_image(example["observation.images.image"])
+        # example["observation.images.wrist_image"] = self._resize_image(example["observation.images.wrist_image"])
+
+        # vla_input = {
+        #     "examples": [example],
+        #     "do_sample": False,
+        #     "use_ddim": self.use_ddim,
+        #     "num_ddim_steps": self.num_ddim_steps,
+        # }
+
+        # vla_input = {
+        #     "batch": example,
+            # "do_sample": False,
+            # "use_ddim": self.use_ddim,
+            # "num_ddim_steps": self.num_ddim_steps,
+        # }
+        vla_input = example
         action_chunk_size = self.action_chunk_size
         if step % action_chunk_size == 0:
             response = self.client.predict_action(vla_input)
             try:
-                normalized_actions = response["data"]["normalized_actions"] # B, chunk, D
+                # normalized_actions = response["data"]["normalized_actions"]  # B, chunk, D
+                normalized_actions = response["actions"]  # (B, T, D) or (T, D)
             except KeyError:
                 print(f"Response data: {response}")
                 raise KeyError(f"Key 'normalized_actions' not found in response data: {response['data'].keys()}")
 
-            normalized_actions = normalized_actions[0]
+            # Handle both (B, T, D) and (T, D) formats
+            if normalized_actions.ndim == 3:
+                normalized_actions = normalized_actions[0]  # (T, D)
             # self.raw_actions = self.unnormalize_actions(normalized_actions=normalized_actions, action_norm_stats=self.action_norm_stats)
             self.raw_actions = normalized_actions
 
@@ -162,8 +171,7 @@ class ModelClient:
     def get_action_chunk_size(policy_ckpt_path):
         model_config, _ = read_mode_config(policy_ckpt_path)  # read config and norm_stats
         # import ipdb; ipdb.set_trace()
-        return model_config['framework']['action_model']['future_action_window_size'] + 1
-
+        return model_config["framework"]["action_model"]["future_action_window_size"] + 1
 
     def _resize_image(self, image: np.ndarray) -> np.ndarray:
         image = cv.resize(image, tuple(self.image_size), interpolation=cv.INTER_AREA)
